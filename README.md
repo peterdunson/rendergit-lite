@@ -1,55 +1,91 @@
-# rendergit
+# rendergit-lite
 
-> Just show me the code.
+> Interactive code viewer with selectable files.
 
-Tired of clicking around complex file hierarchies of GitHub repos? Do you just want to see all of the code on a single page? Enter `rendergit`. Flatten any GitHub repository into a single, static HTML page with syntax highlighting, markdown rendering, and a clean sidebar navigation. Perfect for code review, exploration, and an instant Ctrl+F experience.
+Fork of [rendergit](https://github.com/karpathy/rendergit) by Andrej Karpathy with interactive file selection and improved UI.
 
-## Basic usage
+Flatten any GitHub repository into a single HTML page, then **pick which files you want** using checkboxes. Perfect for feeding specific parts of a codebase to ChatGPT/Claude without the bloat.
 
-Install and use easily with [uv](https://docs.astral.sh/uv/):
+---
 
-```bash
-uv tool install git+https://github.com/karpathy/rendergit
-rendergit https://github.com/karpathy/nanogpt
-```
-
-Alternatively, more manual pip install example:
+## Install
 
 ```bash
-git clone https://github.com/karpathy/rendergit
-cd rendergit
-pip install -e .
-rendergit https://github.com/karpathy/nanoGPT
+pip install git+https://github.com/peterdunson/rendergit-lite.git
 ```
 
-The code will:
-1. Clone the repo to a temporary directory
-2. Render its source code into a single static temporary HTML file
-3. Automatically open the file in your browser
+---
 
-Once open, you can toggle between two views:
-- **👤 Human View**: Browse with syntax highlighting, sidebar navigation, visual goodies
-- **🤖 LLM View**: Copy the entire codebase as CXML text to paste into Claude, ChatGPT, etc.
+## Use
 
-There's a few other smaller options, see the code.
+```bash
+rendergit-lite https://github.com/user/repo
+```
+
+This will:
+1. Clone the repo
+2. Generate an interactive HTML page
+3. Auto-open in your browser
+
+---
 
 ## Features
 
-- **Dual view modes** - toggle between Human and LLM views
-  - **👤 Human View**: Pretty interface with syntax highlighting and navigation
-  - **🤖 LLM View**: Raw CXML text format - perfect for copying to Claude/ChatGPT for code analysis
-- **Syntax highlighting** for code files via Pygments
-- **Markdown rendering** for README files and docs
-- **Smart filtering** - skips binaries and oversized files
-- **Directory tree** overview at the top
-- **Sidebar navigation** with file links and sizes
-- **Responsive design** that works on mobile
-- **Search-friendly** - use Ctrl+F to find anything across all files
+**🎯 Interactive Selection**
+- Checkbox tree to select/deselect files and folders
+- Quick filters: "Python only", "No tests", "Select all"
+- Live stats showing selected file count and total size
+- LLM view updates automatically based on selection
 
-## Contributing
+**🧹 Smart Filtering**
+- Auto-skips bloat: `package-lock.json`, `node_modules/`, `.venv/`, etc.
+- Use `--keep-bloat` to disable
 
-I vibe coded this utility a few months ago but I keep using it very often so I figured I'd just share it. I don't super intend to maintain or support it though.
+**🎨 Improved UI**
+- Modern gradient design
+- File type icons (🐍 .py, ⚛️ .jsx, 📄 .md)
+- Collapsible sections
+- Mobile-friendly
+
+**👤 Human View**
+- Syntax highlighting via Pygments
+- Markdown rendering
+- Clean, readable layout
+
+**🤖 LLM View**
+- CXML format ready to paste into ChatGPT/Claude
+- Updates dynamically based on your file selection
+- No hallucinated code!
+
+---
+
+## Options
+
+```bash
+rendergit-lite https://github.com/user/repo --max-bytes 100000  # Larger file limit
+rendergit-lite https://github.com/user/repo --keep-bloat        # Don't skip bloat files
+rendergit-lite https://github.com/user/repo -o output.html      # Save to specific file
+rendergit-lite https://github.com/user/repo --no-open           # Don't auto-open browser
+```
+
+---
+
+## Why?
+
+LLMs hallucinate fake code. This tool lets you:
+1. Render a real repo
+2. Select only the files you need (no 10MB lock files)
+3. Copy clean, real code to your AI assistant
+
+---
+
+## Credits
+
+- Original [rendergit](https://github.com/karpathy/rendergit) by Andrej Karpathy
+- Interactive selection & UI improvements by Peter Dunson
+
+---
 
 ## License
 
-BSD0 go nuts
+0BSD - do whatever you want
