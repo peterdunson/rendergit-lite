@@ -291,6 +291,16 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
     # Build folder tree
     folder_tree_html = build_folder_tree(infos)
 
+    # Build table of contents for sidebar
+    toc_items = []
+    for i in rendered:
+        anchor = slugify(i.rel)
+        icon = get_file_icon(i.rel)
+        toc_items.append(
+            f'<li><a href="#file-{anchor}"><span class="file-icon">{icon}</span>{html.escape(i.rel)}</a></li>'
+        )
+    toc_html = "\n".join(toc_items)
+
     # Render file sections with data attributes for filtering
     sections: List[str] = []
     file_data = []  # For JavaScript
@@ -375,6 +385,120 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
     background: white;
     min-height: 100vh;
     box-shadow: 0 0 50px rgba(0,0,0,0.1);
+    margin-left: 300px;
+    max-width: calc(1400px - 300px);
+    transition: margin-left 0.3s ease, max-width 0.3s ease;
+  }}
+
+  .page.sidebar-collapsed {{
+    margin-left: 0;
+    max-width: 1400px;
+  }}
+
+  /* Sidebar navigation */
+  .sidebar {{
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 300px;
+    height: 100vh;
+    background: white;
+    border-right: 2px solid #e2e8f0;
+    overflow-y: auto;
+    padding: 1rem;
+    z-index: 100;
+    transition: transform 0.3s ease;
+  }}
+
+  .sidebar.collapsed {{
+    transform: translateX(-100%);
+  }}
+
+  /* Toggle button */
+  .sidebar-toggle {{
+    position: fixed;
+    top: 10px;
+    left: 270px;
+    z-index: 101;
+    background: #2ecc71;
+    color: white;
+    border: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }}
+
+  .sidebar-toggle:hover {{
+    background: #27ae60;
+  }}
+
+  .sidebar-toggle.sidebar-collapsed {{
+    left: 20px;
+  }}
+
+  .sidebar h3 {{
+    margin: 0 0 1rem 0;
+    color: #2d3748;
+    font-size: 1.1rem;
+  }}
+
+  .sidebar-toc {{
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }}
+
+  .sidebar-toc li {{
+    padding: 0.4rem 0;
+    border-bottom: 1px solid #f7fafc;
+  }}
+
+  .sidebar-toc a {{
+    color: #2ecc71;
+    text-decoration: none;
+    font-size: 0.9rem;
+    display: block;
+  }}
+
+  .sidebar-toc a:hover {{
+    text-decoration: underline;
+    color: #27ae60;
+  }}
+
+  .sidebar-toc .file-icon {{
+    margin-right: 0.5rem;
+  }}
+
+  /* Mobile responsive */
+  @media (max-width: 768px) {{
+    .sidebar {{
+      width: 100%;
+      transform: translateX(-100%);
+    }}
+    
+    .sidebar:not(.collapsed) {{
+      transform: translateX(0);
+    }}
+    
+    .page {{
+      margin-left: 0;
+      max-width: 1400px;
+    }}
+    
+    .page.sidebar-collapsed {{
+      margin-left: 0;
+      max-width: 1400px;
+    }}
+    
+    .sidebar-toggle {{
+      display: block;
+    }}
   }}
   
   /* Header */
@@ -650,6 +774,17 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
 <body>
 <a id="top"></a>
 
+<!-- Sidebar toggle button -->
+<button class="sidebar-toggle" onclick="toggleSidebar()">◀</button>
+
+<!-- Sidebar navigation -->
+<div class="sidebar" id="sidebar">
+  <h3>📑 Files ({len(rendered)})</h3>
+  <ul class="sidebar-toc">
+    {toc_html}
+  </ul>
+</div>
+
 <div class="page">
   <header>
     <h1>🚀 {html.escape(os.path.basename(repo_url.rstrip('/').rstrip('.git')))}</h1>
@@ -854,6 +989,25 @@ function showLLMView() {{
     textArea.focus();
     textArea.select();
   }}, 100);
+}}
+
+// Sidebar toggle functionality
+function toggleSidebar() {{
+  const sidebar = document.getElementById('sidebar');
+  const page = document.querySelector('.page');
+  const toggleBtn = document.querySelector('.sidebar-toggle');
+  
+  sidebar.classList.toggle('collapsed');
+  page.classList.toggle('sidebar-collapsed');
+  
+  // Update button text and position
+  if (sidebar.classList.contains('collapsed')) {{
+    toggleBtn.innerHTML = '▶';
+    toggleBtn.classList.add('sidebar-collapsed');
+  }} else {{
+    toggleBtn.innerHTML = '◀';
+    toggleBtn.classList.remove('sidebar-collapsed');
+  }}
 }}
 
 // Initialize on load
