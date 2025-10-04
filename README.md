@@ -2,6 +2,8 @@
 
 > Interactive code viewer with selectable files.
 
+![rendergit-lite demo](readme.png)
+
 Fork of [rendergit](https://github.com/karpathy/rendergit) by Andrej Karpathy with interactive file selection and improved UI.
 
 Flatten any GitHub repository into a single HTML page, then **pick which files you want** using checkboxes. Perfect for feeding specific parts of a codebase to ChatGPT/Claude without the bloat.
