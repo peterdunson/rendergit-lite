@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Flatten a GitHub repo into a single static HTML page for fast skimming and Ctrl+F.
+rendergit-lite: Interactive GitHub repo viewer with selectable folders/files and improved UI.
+Fork of rendergit by Andrej Karpathy with interactive selection features.
 """
 
 from __future__ import annotations
 import argparse
 import html
+import json
 import os
 import pathlib
 import shutil
@@ -14,7 +16,7 @@ import sys
 import tempfile
 import webbrowser
 from dataclasses import dataclass
-from typing import List
+from typing import List, Set
 
 # External deps
 from pygments import highlight
@@ -23,6 +25,18 @@ from pygments.lexers import get_lexer_for_filename, TextLexer
 import markdown
 
 MAX_DEFAULT_BYTES = 50 * 1024
+
+# Common bloat files to auto-skip
+BLOAT_PATTERNS = {
+    "package-lock.json", "yarn.lock", "poetry.lock", "Cargo.lock", "pnpm-lock.yaml",
+    "Gemfile.lock", "composer.lock", "Pipfile.lock", "go.sum",
+}
+
+BLOAT_DIRS = {
+    "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
+    ".next", ".nuxt", "target", "out", ".gradle", ".cache",
+}
+
 BINARY_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico",
     ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
@@ -30,12 +44,42 @@ BINARY_EXTENSIONS = {
     ".ttf", ".otf", ".eot", ".woff", ".woff2",
     ".so", ".dll", ".dylib", ".class", ".jar", ".exe", ".bin",
 }
+
 MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd", ".mkdn"}
+
+# File type icons
+FILE_ICONS = {
+    ".py": "🐍",
+    ".js": "💛",
+    ".jsx": "⚛️",
+    ".ts": "🔷",
+    ".tsx": "⚛️",
+    ".html": "🌐",
+    ".css": "🎨",
+    ".scss": "🎨",
+    ".json": "📋",
+    ".md": "📄",
+    ".txt": "📝",
+    ".yaml": "⚙️",
+    ".yml": "⚙️",
+    ".toml": "⚙️",
+    ".xml": "📰",
+    ".sh": "🔧",
+    ".go": "🐹",
+    ".rs": "🦀",
+    ".java": "☕",
+    ".cpp": "⚡",
+    ".c": "⚡",
+    ".rb": "💎",
+    ".php": "🐘",
+    ".swift": "🦅",
+    ".kt": "🟣",
+}
 
 @dataclass
 class RenderDecision:
     include: bool
-    reason: str  # "ok" | "binary" | "too_large" | "ignored"
+    reason: str  # "ok" | "binary" | "too_large" | "ignored" | "bloat"
 
 @dataclass
 class FileInfo:
@@ -84,70 +128,66 @@ def looks_binary(path: pathlib.Path) -> bool:
             chunk = f.read(8192)
         if b"\x00" in chunk:
             return True
-        # Heuristic: try UTF-8 decode; if it hard-fails, likely binary
         try:
             chunk.decode("utf-8")
         except UnicodeDecodeError:
             return True
         return False
     except Exception:
-        # If unreadable, treat as binary to be safe
         return True
 
 
-def decide_file(path: pathlib.Path, repo_root: pathlib.Path, max_bytes: int) -> FileInfo:
+def is_bloat(rel_path: str, skip_bloat: bool) -> bool:
+    """Check if file is common bloat (lock files, node_modules, etc.)"""
+    if not skip_bloat:
+        return False
+    
+    # Check filename
+    filename = os.path.basename(rel_path)
+    if filename in BLOAT_PATTERNS:
+        return True
+    
+    # Check if in bloat directory
+    parts = rel_path.split("/")
+    for part in parts:
+        if part in BLOAT_DIRS:
+            return True
+    
+    return False
+
+
+def decide_file(path: pathlib.Path, repo_root: pathlib.Path, max_bytes: int, skip_bloat: bool) -> FileInfo:
     rel = str(path.relative_to(repo_root)).replace(os.sep, "/")
     try:
         size = path.stat().st_size
     except FileNotFoundError:
         size = 0
-    # Ignore VCS and build junk
+    
+    # Ignore VCS
     if "/.git/" in f"/{rel}/" or rel.startswith(".git/"):
         return FileInfo(path, rel, size, RenderDecision(False, "ignored"))
+    
+    # Check for bloat
+    if is_bloat(rel, skip_bloat):
+        return FileInfo(path, rel, size, RenderDecision(False, "bloat"))
+    
     if size > max_bytes:
         return FileInfo(path, rel, size, RenderDecision(False, "too_large"))
+    
     if looks_binary(path):
         return FileInfo(path, rel, size, RenderDecision(False, "binary"))
+    
     return FileInfo(path, rel, size, RenderDecision(True, "ok"))
 
 
-def collect_files(repo_root: pathlib.Path, max_bytes: int) -> List[FileInfo]:
+def collect_files(repo_root: pathlib.Path, max_bytes: int, skip_bloat: bool) -> List[FileInfo]:
     infos: List[FileInfo] = []
     for p in sorted(repo_root.rglob("*")):
         if p.is_symlink():
             continue
         if p.is_file():
-            infos.append(decide_file(p, repo_root, max_bytes))
+            infos.append(decide_file(p, repo_root, max_bytes, skip_bloat))
     return infos
-
-
-def generate_tree_fallback(root: pathlib.Path) -> str:
-    """Minimal tree-like output if `tree` command is missing."""
-    lines: List[str] = []
-    prefix_stack: List[str] = []
-
-    def walk(dir_path: pathlib.Path, prefix: str = ""):
-        entries = [e for e in dir_path.iterdir() if e.name != ".git"]
-        entries.sort(key=lambda e: (not e.is_dir(), e.name.lower()))
-        for i, e in enumerate(entries):
-            last = i == len(entries) - 1
-            branch = "└── " if last else "├── "
-            lines.append(prefix + branch + e.name)
-            if e.is_dir():
-                extension = "    " if last else "│   "
-                walk(e, prefix + extension)
-
-    lines.append(root.name)
-    walk(root)
-    return "\n".join(lines)
-
-
-def try_tree_command(root: pathlib.Path) -> str:
-    try:
-        cp = run(["tree", "-a", "."], cwd=str(root))
-        return cp.stdout
-    except Exception:
-        return generate_tree_fallback(root)
 
 
 def read_text(path: pathlib.Path) -> str:
@@ -167,7 +207,6 @@ def highlight_code(text: str, filename: str, formatter: HtmlFormatter) -> str:
 
 
 def slugify(path_str: str) -> str:
-    # Simple slug: keep alnum, dash, underscore; replace others with '-'
     out = []
     for ch in path_str:
         if ch.isalnum() or ch in {"-", "_"}:
@@ -177,27 +216,64 @@ def slugify(path_str: str) -> str:
     return "".join(out)
 
 
-def generate_cxml_text(infos: List[FileInfo], repo_dir: pathlib.Path) -> str:
-    """Generate CXML format text for LLM consumption."""
-    lines = ["<documents>"]
+def get_file_icon(filename: str) -> str:
+    """Get emoji icon for file type"""
+    ext = os.path.splitext(filename)[1].lower()
+    return FILE_ICONS.get(ext, "📄")
 
+
+def build_folder_tree(infos: List[FileInfo]) -> str:
+    """Build interactive checkbox tree for file selection"""
     rendered = [i for i in infos if i.decision.include]
-    for index, i in enumerate(rendered, 1):
-        lines.append(f'<document index="{index}">')
-        lines.append(f"<source>{i.rel}</source>")
-        lines.append("<document_content>")
-
-        try:
-            text = read_text(i.path)
-            lines.append(text)
-        except Exception as e:
-            lines.append(f"Failed to read: {str(e)}")
-
-        lines.append("</document_content>")
-        lines.append("</document>")
-
-    lines.append("</documents>")
-    return "\n".join(lines)
+    
+    # Build folder structure
+    folders = {}
+    for info in rendered:
+        parts = info.rel.split("/")
+        current = folders
+        for i, part in enumerate(parts[:-1]):
+            if part not in current:
+                current[part] = {}
+            current = current[part]
+    
+    # Generate HTML tree
+    def render_tree(tree, path="", level=0):
+        html_parts = []
+        indent = "  " * level
+        
+        # Get all files in this level
+        files_here = [i for i in rendered if "/".join(i.rel.split("/")[:-1]) == path.rstrip("/")]
+        
+        # Render folders first
+        for folder_name in sorted(tree.keys()):
+            folder_path = f"{path}/{folder_name}" if path else folder_name
+            folder_id = slugify(folder_path)
+            
+            html_parts.append(f'{indent}<div class="tree-folder" data-level="{level}">')
+            html_parts.append(f'{indent}  <label>')
+            html_parts.append(f'{indent}    <input type="checkbox" class="folder-checkbox" data-folder="{folder_path}" checked>')
+            html_parts.append(f'{indent}    <span class="folder-icon">📁</span> <strong>{html.escape(folder_name)}/</strong>')
+            html_parts.append(f'{indent}  </label>')
+            html_parts.append(f'{indent}  <div class="tree-children">')
+            html_parts.append(render_tree(tree[folder_name], folder_path, level + 1))
+            html_parts.append(f'{indent}  </div>')
+            html_parts.append(f'{indent}</div>')
+        
+        # Render files
+        for info in sorted(files_here, key=lambda x: x.rel.split("/")[-1]):
+            file_id = slugify(info.rel)
+            icon = get_file_icon(info.rel)
+            html_parts.append(f'{indent}<div class="tree-file" data-level="{level}">')
+            html_parts.append(f'{indent}  <label>')
+            html_parts.append(f'{indent}    <input type="checkbox" class="file-checkbox" data-file="{info.rel}" checked>')
+            html_parts.append(f'{indent}    <span class="file-icon">{icon}</span> {html.escape(os.path.basename(info.rel))}')
+            html_parts.append(f'{indent}    <span class="muted">({bytes_human(info.size)})</span>')
+            html_parts.append(f'{indent}  </label>')
+            html_parts.append(f'{indent}</div>')
+        
+        return "\n".join(html_parts)
+    
+    return render_tree(folders)
 
 
 def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: List[FileInfo]) -> str:
@@ -208,31 +284,23 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
     rendered = [i for i in infos if i.decision.include]
     skipped_binary = [i for i in infos if i.decision.reason == "binary"]
     skipped_large = [i for i in infos if i.decision.reason == "too_large"]
+    skipped_bloat = [i for i in infos if i.decision.reason == "bloat"]
     skipped_ignored = [i for i in infos if i.decision.reason == "ignored"]
-    total_files = len(rendered) + len(skipped_binary) + len(skipped_large) + len(skipped_ignored)
+    total_files = len(rendered) + len(skipped_binary) + len(skipped_large) + len(skipped_bloat) + len(skipped_ignored)
 
-    # Directory tree
-    tree_text = try_tree_command(repo_dir)
+    # Build folder tree
+    folder_tree_html = build_folder_tree(infos)
 
-    # Generate CXML text for LLM view
-    cxml_text = generate_cxml_text(infos, repo_dir)
-
-    # Table of contents
-    toc_items: List[str] = []
-    for i in rendered:
-        anchor = slugify(i.rel)
-        toc_items.append(
-            f'<li><a href="#file-{anchor}">{html.escape(i.rel)}</a> '
-            f'<span class="muted">({bytes_human(i.size)})</span></li>'
-        )
-    toc_html = "".join(toc_items)
-
-    # Render file sections
+    # Render file sections with data attributes for filtering
     sections: List[str] = []
+    file_data = []  # For JavaScript
+    
     for i in rendered:
         anchor = slugify(i.rel)
         p = i.path
         ext = p.suffix.lower()
+        icon = get_file_icon(i.rel)
+        
         try:
             text = read_text(p)
             if ext in MARKDOWN_EXTENSIONS:
@@ -242,13 +310,25 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
                 body_html = f'<div class="highlight">{code_html}</div>'
         except Exception as e:
             body_html = f'<pre class="error">Failed to render: {html.escape(str(e))}</pre>'
+        
         sections.append(f"""
-<section class="file-section" id="file-{anchor}">
-  <h2>{html.escape(i.rel)} <span class="muted">({bytes_human(i.size)})</span></h2>
+<section class="file-section" id="file-{anchor}" data-file="{i.rel}">
+  <h2>
+    <span class="file-icon">{icon}</span>
+    {html.escape(i.rel)} 
+    <span class="muted">({bytes_human(i.size)})</span>
+  </h2>
   <div class="file-body">{body_html}</div>
   <div class="back-top"><a href="#top">↑ Back to top</a></div>
 </section>
 """)
+        
+        # Store file data for JavaScript
+        file_data.append({
+            "path": i.rel,
+            "size": i.size,
+            "content": text
+        })
 
     # Skips lists
     def render_skip_list(title: str, items: List[FileInfo]) -> str:
@@ -260,109 +340,310 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
             for i in items
         ]
         return (
-            f"<details open><summary>{html.escape(title)} ({len(items)})</summary>"
+            f"<details><summary>{html.escape(title)} ({len(items)})</summary>"
             f"<ul class='skip-list'>\n" + "\n".join(lis) + "\n</ul></details>"
         )
 
     skipped_html = (
+        render_skip_list("Skipped bloat files", skipped_bloat) +
         render_skip_list("Skipped binaries", skipped_binary) +
         render_skip_list("Skipped large files", skipped_large)
     )
 
-    # HTML with left sidebar TOC
+    # HTML with interactive selection
     return f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Flattened repo – {html.escape(repo_url)}</title>
+<title>rendergit-lite – {html.escape(repo_url)}</title>
 <style>
+  * {{
+    box-sizing: border-box;
+  }}
   body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji','Segoe UI Emoji';
-    margin: 0; padding: 0; line-height: 1.45;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    line-height: 1.6;
+    background: linear-gradient(135deg, #2ecc71 0%, #3498db 100%);
   }}
-  .container {{ max-width: 1100px; margin: 0 auto; padding: 0 1rem; }}
-  .meta small {{ color: #666; }}
-  .counts {{ margin-top: 0.25rem; color: #333; }}
-  .muted {{ color: #777; font-weight: normal; font-size: 0.9em; }}
-
-  /* Layout with sidebar */
-  .page {{ display: grid; grid-template-columns: 320px minmax(0,1fr); gap: 0; }}
-  #sidebar {{
-    position: sticky; top: 0; align-self: start;
-    height: 100vh; overflow: auto;
-    border-right: 1px solid #eee; background: #fafbfc;
+  .page {{
+    max-width: 1400px;
+    margin: 0 auto;
+    background: white;
+    min-height: 100vh;
+    box-shadow: 0 0 50px rgba(0,0,0,0.1);
   }}
-  #sidebar .sidebar-inner {{ padding: 0.75rem; }}
-  #sidebar h2 {{ margin: 0 0 0.5rem 0; font-size: 1rem; }}
-
-  .toc {{ list-style: none; padding-left: 0; margin: 0; overflow-x: auto; }}
-  .toc li {{ padding: 0.15rem 0; white-space: nowrap; }}
-  .toc a {{ text-decoration: none; color: #0366d6; display: inline-block; text-decoration: none; }}
-  .toc a:hover {{ text-decoration: underline; }}
-
-  main.container {{ padding-top: 1rem; }}
-
-  pre {{ background: #f6f8fa; padding: 0.75rem; overflow: auto; border-radius: 6px; }}
-  code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono','Courier New', monospace; }}
-  .highlight {{ overflow-x: auto; }}
-  .file-section {{ padding: 1rem; border-top: 1px solid #eee; }}
-  .file-section h2 {{ margin: 0 0 0.5rem 0; font-size: 1.1rem; }}
-  .file-body {{ margin-bottom: 0.5rem; }}
-  .back-top {{ font-size: 0.9rem; }}
-  .skip-list code {{ background: #f6f8fa; padding: 0.1rem 0.3rem; border-radius: 4px; }}
-  .error {{ color: #b00020; background: #fff3f3; }}
-
-  /* Hide duplicate top TOC on wide screens */
-  .toc-top {{ display: block; }}
-  @media (min-width: 1000px) {{ .toc-top {{ display: none; }} }}
-
-  :target {{ scroll-margin-top: 8px; }}
-
+  
+  /* Header */
+  header {{
+    background: linear-gradient(135deg, #2ecc71 0%, #3498db 100%);
+    color: white;
+    padding: 2rem;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  }}
+  h1 {{
+    margin: 0 0 0.5rem 0;
+    font-size: 2rem;
+  }}
+  .meta {{
+    font-size: 0.9rem;
+    opacity: 0.95;
+  }}
+  .meta a {{
+    color: white;
+    text-decoration: underline;
+  }}
+  
   /* View toggle */
   .view-toggle {{
-    margin: 1rem 0;
+    background: white;
+    padding: 1.5rem 2rem;
+    border-bottom: 2px solid #e2e8f0;
     display: flex;
-    gap: 0.5rem;
+    gap: 1rem;
     align-items: center;
   }}
   .toggle-btn {{
-    padding: 0.5rem 1rem;
-    border: 1px solid #d1d9e0;
+    padding: 0.65rem 1.5rem;
+    border: 2px solid #cbd5e0;
     background: white;
     cursor: pointer;
-    border-radius: 6px;
-    font-size: 0.9rem;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: all 0.2s;
+    color: #4a5568;
   }}
   .toggle-btn.active {{
-    background: #0366d6;
+    background: linear-gradient(135deg, #2ecc71 0%, #3498db 100%);
     color: white;
-    border-color: #0366d6;
+    border-color: transparent;
+    box-shadow: 0 4px 10px rgba(46, 204, 113, 0.3);
   }}
   .toggle-btn:hover:not(.active) {{
-    background: #f6f8fa;
+    background: #f7fafc;
+    border-color: #2ecc71;
+    color: #2ecc71;
   }}
-
+  
+  /* Main content */
+  main {{
+    padding: 2rem;
+  }}
+  
+  /* Selection panel */
+  .selection-panel {{
+    background: #f7fafc;
+    border: 2px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+  }}
+  .selection-panel h2 {{
+    margin: 0 0 1rem 0;
+    font-size: 1.3rem;
+    color: #2d3748;
+  }}
+  .selection-stats {{
+    background: white;
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    display: flex;
+    gap: 2rem;
+    flex-wrap: wrap;
+  }}
+  .stat-item {{
+    display: flex;
+    flex-direction: column;
+  }}
+  .stat-label {{
+    font-size: 0.85rem;
+    color: #718096;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }}
+  .stat-value {{
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #2ecc71;
+  }}
+  .quick-filters {{
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }}
+  .filter-btn {{
+    padding: 0.5rem 1rem;
+    border: 1px solid #cbd5e0;
+    background: white;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+  }}
+  .filter-btn:hover {{
+    background: #2ecc71;
+    color: white;
+    border-color: #2ecc71;
+  }}
+  
+  /* Folder tree */
+  .folder-tree {{
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 1rem;
+    max-height: 400px;
+    overflow-y: auto;
+  }}
+  .tree-folder, .tree-file {{
+    margin: 0.25rem 0;
+  }}
+  .tree-folder label, .tree-file label {{
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    padding: 0.25rem;
+    border-radius: 4px;
+    transition: background 0.2s;
+  }}
+  .tree-folder label:hover, .tree-file label:hover {{
+    background: #f7fafc;
+  }}
+  .tree-children {{
+    margin-left: 1.5rem;
+  }}
+  .folder-icon, .file-icon {{
+    margin: 0 0.5rem;
+  }}
+  input[type="checkbox"] {{
+    margin-right: 0.5rem;
+  }}
+  
+  /* File sections */
+  .file-section {{
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    background: white;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+  }}
+  .file-section.hidden {{
+    display: none;
+  }}
+  .file-section h2 {{
+    margin: 0 0 1rem 0;
+    font-size: 1.3rem;
+    color: #2d3748;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }}
+  .file-body {{
+    margin-bottom: 1rem;
+  }}
+  pre {{
+    background: #f7fafc;
+    padding: 1rem;
+    overflow: auto;
+    border-radius: 8px;
+    border-left: 4px solid #2ecc71;
+  }}
+  code {{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }}
+  .highlight {{
+    overflow-x: auto;
+  }}
+  .back-top {{
+    font-size: 0.9rem;
+    margin-top: 1rem;
+  }}
+  .back-top a {{
+    color: #2ecc71;
+    text-decoration: none;
+  }}
+  .back-top a:hover {{
+    text-decoration: underline;
+  }}
+  .muted {{
+    color: #718096;
+    font-weight: normal;
+    font-size: 0.9em;
+  }}
+  .skip-list {{
+    list-style: none;
+    padding-left: 1rem;
+  }}
+  .skip-list code {{
+    background: #f7fafc;
+    padding: 0.1rem 0.3rem;
+    border-radius: 4px;
+  }}
+  details {{
+    margin: 1rem 0;
+    padding: 0.5rem;
+    background: #f7fafc;
+    border-radius: 6px;
+  }}
+  summary {{
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0.5rem;
+  }}
+  summary:hover {{
+    background: #edf2f7;
+    border-radius: 4px;
+  }}
+  
   /* LLM view */
-  #llm-view {{ display: none; }}
+  #llm-view {{
+    display: none;
+  }}
+  .llm-section {{
+    background: white;
+    padding: 2rem;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+  }}
+  .llm-section h2 {{
+    margin-top: 0;
+    color: #2d3748;
+  }}
   #llm-text {{
     width: 100%;
     height: 70vh;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size: 0.85em;
-    border: 1px solid #d1d9e0;
-    border-radius: 6px;
-    padding: 1rem;
+    font-size: 0.9rem;
+    border: 2px solid #cbd5e0;
+    border-radius: 12px;
+    padding: 1.5rem;
     resize: vertical;
+    background: #f7fafc;
+    color: #2d3748;
   }}
   .copy-hint {{
-    margin-top: 0.5rem;
-    color: #666;
-    font-size: 0.9em;
+    margin-top: 1rem;
+    padding: 1rem;
+    background: linear-gradient(135deg, rgba(46, 204, 113, 0.1) 0%, rgba(52, 152, 219, 0.1) 100%);
+    border-left: 4px solid #2ecc71;
+    border-radius: 8px;
   }}
-
-  /* Pygments */
+  kbd {{
+    background: #edf2f7;
+    border: 1px solid #cbd5e0;
+    border-radius: 4px;
+    padding: 0.15rem 0.4rem;
+    font-family: monospace;
+    font-size: 0.85em;
+  }}
+  
   {pygments_css}
 </style>
 </head>
@@ -370,65 +651,190 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
 <a id="top"></a>
 
 <div class="page">
-  <nav id="sidebar"><div class="sidebar-inner">
-      <h2>Contents ({len(rendered)})</h2>
-      <ul class="toc toc-sidebar">
-        <li><a href="#top">↑ Back to top</a></li>
-        {toc_html}
-      </ul>
-  </div></nav>
-
-  <main class="container">
-
-    <section>
-        <div class="meta">
-        <div><strong>Repository:</strong> <a href="{html.escape(repo_url)}">{html.escape(repo_url)}</a></div>
-        <small><strong>HEAD commit:</strong> {html.escape(head_commit)}</small>
-        <div class="counts">
-            <strong>Total files:</strong> {total_files} · <strong>Rendered:</strong> {len(rendered)} · <strong>Skipped:</strong> {len(skipped_binary) + len(skipped_large) + len(skipped_ignored)}
-        </div>
-        </div>
-    </section>
-
-    <div class="view-toggle">
-      <strong>View:</strong>
-      <button class="toggle-btn active" onclick="showHumanView()">👤 Human</button>
-      <button class="toggle-btn" onclick="showLLMView()">🤖 LLM</button>
+  <header>
+    <h1>🚀 {html.escape(os.path.basename(repo_url.rstrip('/').rstrip('.git')))}</h1>
+    <div class="meta">
+      <div><strong>Repository:</strong> <a href="{html.escape(repo_url)}">{html.escape(repo_url)}</a></div>
+      <div><strong>Commit:</strong> {html.escape(head_commit[:8])}</div>
+      <div><strong>Total files:</strong> {total_files} · <strong>Rendered:</strong> {len(rendered)} · <strong>Skipped:</strong> {len(skipped_binary) + len(skipped_large) + len(skipped_bloat) + len(skipped_ignored)}</div>
     </div>
+  </header>
 
+  <div class="view-toggle">
+    <strong>View:</strong>
+    <button class="toggle-btn active" onclick="showHumanView()">👤 Human</button>
+    <button class="toggle-btn" onclick="showLLMView()">🤖 LLM</button>
+  </div>
+
+  <main>
     <div id="human-view">
-      <section>
-        <h2>Directory tree</h2>
-        <pre>{html.escape(tree_text)}</pre>
-      </section>
-
-      <section class="toc-top">
-        <h2>Table of contents ({len(rendered)})</h2>
-        <ul class="toc">{toc_html}</ul>
-      </section>
-
+      <div class="selection-panel">
+        <h2>📁 Select Files to Include</h2>
+        
+        <div class="selection-stats">
+          <div class="stat-item">
+            <span class="stat-label">Selected Files</span>
+            <span class="stat-value" id="selected-count">{len(rendered)}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Total Size</span>
+            <span class="stat-value" id="selected-size">{bytes_human(sum(i.size for i in rendered))}</span>
+          </div>
+        </div>
+        
+        <div class="quick-filters">
+          <button class="filter-btn" onclick="selectAll()">✅ Select All</button>
+          <button class="filter-btn" onclick="deselectAll()">❌ Deselect All</button>
+          <button class="filter-btn" onclick="filterByExtension('.py')">🐍 Python Only</button>
+          <button class="filter-btn" onclick="filterByExtension('.js')">💛 JavaScript Only</button>
+          <button class="filter-btn" onclick="filterByExtension('.md')">📄 Markdown Only</button>
+          <button class="filter-btn" onclick="toggleTests()">🧪 Toggle Tests</button>
+        </div>
+        
+        <div class="folder-tree" id="folder-tree">
+          {folder_tree_html}
+        </div>
+      </div>
+      
       <section>
         <h2>Skipped items</h2>
         {skipped_html}
       </section>
 
-      {''.join(sections)}
+      <div id="file-sections">
+        {''.join(sections)}
+      </div>
     </div>
 
     <div id="llm-view">
-      <section>
+      <div class="llm-section">
         <h2>🤖 LLM View - CXML Format</h2>
-        <p>Copy the text below and paste it to an LLM for analysis:</p>
-        <textarea id="llm-text" readonly>{html.escape(cxml_text)}</textarea>
+        <p>This view updates based on your file selection. Copy and paste to an LLM for analysis:</p>
+        <textarea id="llm-text" readonly></textarea>
         <div class="copy-hint">
-          💡 <strong>Tip:</strong> Click in the text area and press Ctrl+A (Cmd+A on Mac) to select all, then Ctrl+C (Cmd+C) to copy.
+          💡 <strong>Tip:</strong> Click in the text area, press <kbd>Ctrl+A</kbd> (or <kbd>Cmd+A</kbd>), then <kbd>Ctrl+C</kbd> (or <kbd>Cmd+C</kbd>) to copy.
         </div>
-      </section>
+      </div>
     </div>
   </main>
 </div>
 
 <script>
+// File data embedded from Python
+const fileData = {json.dumps(file_data)};
+
+// Update stats and LLM view based on selection
+function updateSelection() {{
+  const selectedFiles = [];
+  const checkboxes = document.querySelectorAll('.file-checkbox:checked');
+  
+  checkboxes.forEach(cb => {{
+    const filePath = cb.dataset.file;
+    const fileInfo = fileData.find(f => f.path === filePath);
+    if (fileInfo) {{
+      selectedFiles.push(fileInfo);
+    }}
+  }});
+  
+  // Update stats
+  document.getElementById('selected-count').textContent = selectedFiles.length;
+  const totalSize = selectedFiles.reduce((sum, f) => sum + f.size, 0);
+  document.getElementById('selected-size').textContent = formatBytes(totalSize);
+  
+  // Update visible sections
+  document.querySelectorAll('.file-section').forEach(section => {{
+    const filePath = section.dataset.file;
+    const isChecked = Array.from(checkboxes).some(cb => cb.dataset.file === filePath);
+    section.classList.toggle('hidden', !isChecked);
+  }});
+  
+  // Update LLM text
+  updateLLMText(selectedFiles);
+}}
+
+function updateLLMText(selectedFiles) {{
+  let cxml = '<documents>\\n';
+  selectedFiles.forEach((file, index) => {{
+    cxml += `<document index="${{index + 1}}">\\n`;
+    cxml += `<source>${{file.path}}</source>\\n`;
+    cxml += '<document_content>\\n';
+    cxml += file.content;
+    cxml += '\\n</document_content>\\n';
+    cxml += '</document>\\n';
+  }});
+  cxml += '</documents>';
+  document.getElementById('llm-text').value = cxml;
+}}
+
+function formatBytes(bytes) {{
+  const units = ['B', 'KiB', 'MiB', 'GiB'];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {{
+    size /= 1024;
+    unitIndex++;
+  }}
+  return unitIndex === 0 ? `${{Math.floor(size)}} ${{units[unitIndex]}}` : `${{size.toFixed(1)}} ${{units[unitIndex]}}`;
+}}
+
+// Quick filter functions
+function selectAll() {{
+  document.querySelectorAll('.file-checkbox, .folder-checkbox').forEach(cb => cb.checked = true);
+  updateSelection();
+}}
+
+function deselectAll() {{
+  document.querySelectorAll('.file-checkbox, .folder-checkbox').forEach(cb => cb.checked = false);
+  updateSelection();
+}}
+
+
+
+function filterByExtension(ext) {{
+  deselectAll();
+  document.querySelectorAll('.file-checkbox').forEach(cb => {{
+    const filePath = cb.dataset.file;
+    if (filePath.endsWith(ext)) {{
+      cb.checked = true;
+    }}
+  }});
+  updateSelection();
+}}
+
+function toggleTests() {{
+  document.querySelectorAll('.file-checkbox').forEach(cb => {{
+    const filePath = cb.dataset.file;
+    if (filePath.includes('/test') || filePath.includes('/tests') || filePath.includes('_test.') || filePath.includes('.test.')) {{
+      cb.checked = !cb.checked;
+    }}
+  }});
+  updateSelection();
+}}
+
+// Folder checkbox logic - check/uncheck all files in folder
+document.querySelectorAll('.folder-checkbox').forEach(folderCb => {{
+  folderCb.addEventListener('change', function() {{
+    const folderPath = this.dataset.folder;
+    const isChecked = this.checked;
+    
+    // Update all files in this folder
+    document.querySelectorAll('.file-checkbox').forEach(fileCb => {{
+      const filePath = fileCb.dataset.file;
+      if (filePath.startsWith(folderPath + '/') || filePath === folderPath) {{
+        fileCb.checked = isChecked;
+      }}
+    }});
+    
+    updateSelection();
+  }});
+}});
+
+// File checkbox change
+document.querySelectorAll('.file-checkbox').forEach(cb => {{
+  cb.addEventListener('change', updateSelection);
+}});
+
+// View switching
 function showHumanView() {{
   document.getElementById('human-view').style.display = 'block';
   document.getElementById('llm-view').style.display = 'none';
@@ -441,14 +847,17 @@ function showLLMView() {{
   document.getElementById('llm-view').style.display = 'block';
   document.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
   event.target.classList.add('active');
-
-  // Auto-select all text when switching to LLM view for easy copying
+  
+  // Auto-select text
   setTimeout(() => {{
     const textArea = document.getElementById('llm-text');
     textArea.focus();
     textArea.select();
   }}, 100);
 }}
+
+// Initialize on load
+updateSelection();
 </script>
 </body>
 </html>
@@ -457,7 +866,6 @@ function showLLMView() {{
 
 def derive_temp_output_path(repo_url: str) -> pathlib.Path:
     """Derive a temporary output path from the repo URL."""
-    # Extract repo name from URL like https://github.com/owner/repo or https://github.com/owner/repo.git
     parts = repo_url.rstrip('/').split('/')
     if len(parts) >= 2:
         repo_name = parts[-1]
@@ -466,51 +874,49 @@ def derive_temp_output_path(repo_url: str) -> pathlib.Path:
         filename = f"{repo_name}.html"
     else:
         filename = "repo.html"
-
     return pathlib.Path(tempfile.gettempdir()) / filename
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Flatten a GitHub repo to a single HTML page")
+    ap = argparse.ArgumentParser(description="Interactive GitHub repo viewer with selectable files")
     ap.add_argument("repo_url", help="GitHub repo URL (https://github.com/owner/repo[.git])")
-    ap.add_argument("-o", "--out", help="Output HTML file path (default: temporary file derived from repo name)")
-    ap.add_argument("--max-bytes", type=int, default=MAX_DEFAULT_BYTES, help="Max file size to render (bytes); larger files are listed but skipped")
-    ap.add_argument("--no-open", action="store_true", help="Don't open the HTML file in browser after generation")
+    ap.add_argument("-o", "--out", help="Output HTML file path (default: temporary file)")
+    ap.add_argument("--max-bytes", type=int, default=MAX_DEFAULT_BYTES, help="Max file size to render (default: 50KB)")
+    ap.add_argument("--no-open", action="store_true", help="Don't open HTML in browser")
+    ap.add_argument("--keep-bloat", action="store_true", help="Don't auto-skip bloat files (lock files, node_modules, etc.)")
     args = ap.parse_args()
 
-    # Set default output path if not provided
     if args.out is None:
         args.out = str(derive_temp_output_path(args.repo_url))
 
-    tmpdir = tempfile.mkdtemp(prefix="flatten_repo_")
+    tmpdir = tempfile.mkdtemp(prefix="rendergit_lite_")
     repo_dir = pathlib.Path(tmpdir, "repo")
 
     try:
-        print(f"📁 Cloning {args.repo_url} to temporary directory: {repo_dir}", file=sys.stderr)
+        print(f"📁 Cloning {args.repo_url}...", file=sys.stderr)
         git_clone(args.repo_url, str(repo_dir))
         head = git_head_commit(str(repo_dir))
         print(f"✓ Clone complete (HEAD: {head[:8]})", file=sys.stderr)
 
-        print(f"📊 Scanning files in {repo_dir}...", file=sys.stderr)
-        infos = collect_files(repo_dir, args.max_bytes)
+        print(f"📊 Scanning files...", file=sys.stderr)
+        skip_bloat = not args.keep_bloat
+        infos = collect_files(repo_dir, args.max_bytes, skip_bloat)
         rendered_count = sum(1 for i in infos if i.decision.include)
         skipped_count = len(infos) - rendered_count
-        print(f"✓ Found {len(infos)} files total ({rendered_count} will be rendered, {skipped_count} skipped)", file=sys.stderr)
+        print(f"✓ Found {len(infos)} files ({rendered_count} rendered, {skipped_count} skipped)", file=sys.stderr)
 
-        print(f"🔨 Generating HTML...", file=sys.stderr)
+        print(f"🔨 Generating interactive HTML...", file=sys.stderr)
         html_out = build_html(args.repo_url, repo_dir, head, infos)
 
         out_path = pathlib.Path(args.out)
-        print(f"💾 Writing HTML file: {out_path.resolve()}", file=sys.stderr)
+        print(f"💾 Writing to {out_path}...", file=sys.stderr)
         out_path.write_text(html_out, encoding="utf-8")
-        file_size = out_path.stat().st_size
-        print(f"✓ Wrote {bytes_human(file_size)} to {out_path}", file=sys.stderr)
+        print(f"✓ Wrote {bytes_human(out_path.stat().st_size)}", file=sys.stderr)
 
         if not args.no_open:
-            print(f"🌐 Opening {out_path} in browser...", file=sys.stderr)
+            print(f"🌐 Opening in browser...", file=sys.stderr)
             webbrowser.open(f"file://{out_path.resolve()}")
 
-        print(f"🗑️  Cleaning up temporary directory: {tmpdir}", file=sys.stderr)
         return 0
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -518,3 +924,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     main()
+

@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+rendergit.py
+rendergit.egg-info/PKG-INFO
+rendergit.egg-info/SOURCES.txt
+rendergit.egg-info/dependency_links.txt
+rendergit.egg-info/entry_points.txt
+rendergit.egg-info/requires.txt
+rendergit.egg-info/top_level.txt

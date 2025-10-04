@@ -3,13 +3,14 @@ requires = ["setuptools >= 61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rendergit"
+name = "rendergit-lite"
 version = "0.1.0"
-description = "Flatten a GitHub repo into a single static HTML page for fast skimming and Ctrl+F"
+description = "Interactive GitHub repo viewer with selectable folders/files and improved UI"
 readme = "README.md"
 license = "0BSD"
 authors = [
-    {name = "Andrej Karpathy"},
+    {name = "Peter Dunson"},
+    {name = "Andrej Karpathy", email = "karpathy@gmail.com"},
 ]
 requires-python = ">=3.10"
 dependencies = [
@@ -27,8 +28,8 @@ classifiers = [
 ]
 
 [project.scripts]
-rendergit = "rendergit:main"
+rendergit-lite = "rendergit:main"
 
 [project.urls]
-Homepage = "https://github.com/karpathy/rendergit"
-Repository = "https://github.com/karpathy/rendergit"
+Homepage = "https://github.com/peterdunson/rendergit-lite"
+Repository = "https://github.com/peterdunson/rendergit-lite"
