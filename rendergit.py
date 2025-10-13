@@ -797,8 +797,8 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
 
   <div class="view-toggle">
     <strong>View:</strong>
-    <button class="toggle-btn active" onclick="showHumanView()">👤 Human</button>
-    <button class="toggle-btn" onclick="showLLMView()">🤖 LLM</button>
+    <button class="toggle-btn active" onclick="showHumanView(this)">👤 Human</button>
+    <button class="toggle-btn" onclick="showLLMView(this)">🤖 LLM</button>
   </div>
 
   <main>
@@ -970,18 +970,18 @@ document.querySelectorAll('.file-checkbox').forEach(cb => {{
 }});
 
 // View switching
-function showHumanView() {{
+function showHumanView(btn) {{
   document.getElementById('human-view').style.display = 'block';
   document.getElementById('llm-view').style.display = 'none';
-  document.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
-  event.target.classList.add('active');
+  document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
 }}
 
-function showLLMView() {{
+function showLLMView(btn) {{
   document.getElementById('human-view').style.display = 'none';
   document.getElementById('llm-view').style.display = 'block';
-  document.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
-  event.target.classList.add('active');
+  document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
   
   // Auto-select text
   setTimeout(() => {{
